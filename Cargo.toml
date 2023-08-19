@@ -1,0 +1,14 @@
+[package]
+name = "s3map"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.75"
+aws-config = "0.56.0"
+aws-sdk-s3 = "0.29.0"
+nix = "0.26.2"
+tokio = { version = "1.32.0", features = ["rt", "macros", "rt-multi-thread", "sync"] }
+userfaultfd = { version = "0.6.0", features = ["linux5_7"] }
