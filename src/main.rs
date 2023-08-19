@@ -34,32 +34,42 @@ async fn main() -> Result<()> {
     // for c in slice.iter_mut() {
     //     *c = 'A' as u8;
     // }
+
+    // Print out a slice of the contents of memory
     println!("{:?}", &slice[0..16]);
+    // Perform some writes in the memory
     for c in slice.iter_mut() {
         *c += 1;
     }
+    // Wait a few seconds to demonstrate background persistence of the memory.
     tokio::time::sleep(Duration::from_secs(5)).await;
     println!("{:?}", &slice[0..16]);
+
+    // Perform some writes in the memory
     for c in slice.iter_mut() {
         *c += 1;
     }
-    tokio::time::sleep(Duration::from_secs(5)).await;
     println!("{:?}", &slice[0..16]);
+    // Writes should be persisted when S3Map is dropped.
 
     Ok(())
 }
 
+/// A wrapper around a [Uffd] to support async reading of events.
 struct AsyncUffd {
     inner: AsyncFd<Uffd>,
 }
 
 impl AsyncUffd {
+    /// Creates a new async [Uffd] wrapper. This must be created in the tokio runtime it is
+    /// intended to be used in.
     fn new(uffd: Uffd) -> io::Result<Self> {
         Ok(Self {
             inner: AsyncFd::new(uffd)?,
         })
     }
 
+    /// Reads one userfaultfd event.
     async fn read(&mut self) -> io::Result<Event> {
         loop {
             let mut guard = self.inner.readable().await?;
@@ -98,6 +108,8 @@ impl DerefMut for AsyncUffd {
     }
 }
 
+/// A memmapped region that is backed by objected in S3. Writes are periodically
+/// persisted back to S3 and are flushed when the S3Map is dropped.
 pub struct S3Map {
     addr: *mut c_void,
     len: usize,
@@ -106,6 +118,7 @@ pub struct S3Map {
 }
 
 impl S3Map {
+    /// Creates a new S3Map backed by the specified S3 bucket.
     pub fn new(
         client: aws_sdk_s3::Client,
         bucket: String,
@@ -187,18 +200,22 @@ impl S3Map {
         })
     }
 
+    /// Returns a mutable slice containing the entire memmapped region.
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         unsafe { slice::from_raw_parts_mut(self.addr as *mut u8, self.len) }
     }
 
+    /// Returns a slice containing the entire memmapped region.
     pub fn as_slice(&self) -> &[u8] {
         unsafe { slice::from_raw_parts(self.addr as *mut u8, self.len) }
     }
 
+    /// Returns the length in bytes of the memmapped region.
     pub fn len(&self) -> usize {
         self.len
     }
 
+    /// Handle page faults and continually persist data back to S3.
     async fn handler(
         mut client: aws_sdk_s3::Client,
         bucket: String,
@@ -225,9 +242,8 @@ impl S3Map {
 
                         let dst = (start + offset) as *mut c_void;
 
-                        // We can only map once, so if we've already mapped, we'll just wake the
-                        // thread.
-                        // TODO: Handle write protecting ranges and queuing up writes back to the file.
+                        // We can only map the page once, so if we'll skip this if we've already mapped the
+                        // page.
                         if mapped.insert(offset) {
                             let resp = client
                                 .get_object()
@@ -250,23 +266,29 @@ impl S3Map {
                                 uffd.copy(buf.as_ptr() as *const c_void, dst, object_len, true)?;
                             }
                             uffd.write_protect(dst, object_len)?;
-                            continue
+                            continue;
                         }
 
+                        // If this is a write, we'll add it to the dirty list and allow the thread
+                        // to write. We'll persist the changes in the background.
                         if *rw == ReadWrite::Write {
                             dirty.insert(offset);
                             uffd.remove_write_protection(dst, object_len, true)?;
                             continue;
                         }
 
+                        // At a minimum we need to wake the thread so it can continue.
                         uffd.wake(*addr, page_size)?;
                     }
-                    _ => todo!(),
+                    _ => {},
                 },
+                // This is closed when the S3Map is dropped, so we'll persist one more time and
+                // then exit the loop.
                 _ = drop_rx.recv() => {
                     S3Map::flush_dirty(&uffd, &mut client, &bucket, &mut dirty, start, object_len).await?;
                     return Ok(())
                 },
+                // At an interval we'll flush dirty ranges back to S3.
                 _ = flush_ticker.tick() => {
                     S3Map::flush_dirty(&uffd, &mut client, &bucket, &mut dirty, start, object_len).await?;
                     continue
@@ -275,6 +297,7 @@ impl S3Map {
         }
     }
 
+    /// Flushes all dirty page ranges to S3 and sets up new write protect ranges.
     async fn flush_dirty(
         uffd: &AsyncUffd,
         client: &mut aws_sdk_s3::Client,
