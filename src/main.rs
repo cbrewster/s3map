@@ -22,7 +22,7 @@ use tokio::{
 };
 use userfaultfd::{Event, FeatureFlags, ReadWrite, RegisterMode, Uffd, UffdBuilder};
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() -> Result<()> {
     let config = aws_config::load_from_env().await;
     let client = aws_sdk_s3::Client::new(&config);
@@ -171,13 +171,14 @@ impl S3Map {
 
         let (tx, rx) = mpsc::channel::<()>(1);
 
+        // The page fault handler _must_ run in a different thread than the one where memory is
+        // being accessed. Otherwise things can deadlock because the page fault cannot be handled
+        // because the thread is blocked on the read.
         let start = addr as usize;
         let join_handle = thread::spawn(move || {
-            let rt = runtime::Builder::new_current_thread()
-                .enable_io()
-                .enable_time()
-                .build()
-                .unwrap();
+            // We use a tokio async runtime to make it easier to work with events and background
+            // persistence.
+            let rt = runtime::Runtime::new().unwrap();
             LocalSet::new().block_on(&rt, async move {
                 spawn_local(Self::handler(
                     client,
