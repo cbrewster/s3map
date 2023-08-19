@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
     let config = aws_config::load_from_env().await;
     let client = aws_sdk_s3::Client::new(&config);
 
-    let mut s3map = S3Map::new(client, 16, 1)?;
+    let mut s3map = S3Map::new(client, String::from("s3map-demo"), 16, 1)?;
 
     let slice = s3map.as_mut_slice();
     // Initially set things to all As
@@ -108,6 +108,7 @@ pub struct S3Map {
 impl S3Map {
     pub fn new(
         client: aws_sdk_s3::Client,
+        bucket: String,
         page_count: usize,
         pages_per_object: usize,
     ) -> Result<Self> {
@@ -167,6 +168,7 @@ impl S3Map {
             LocalSet::new().block_on(&rt, async move {
                 spawn_local(Self::handler(
                     client,
+                    bucket,
                     uffd,
                     rx,
                     start,
@@ -199,6 +201,7 @@ impl S3Map {
 
     async fn handler(
         mut client: aws_sdk_s3::Client,
+        bucket: String,
         uffd: Uffd,
         mut drop_rx: mpsc::Receiver<()>,
         start: usize,
@@ -228,7 +231,7 @@ impl S3Map {
                         if mapped.insert(offset) {
                             let resp = client
                                 .get_object()
-                                .bucket("s3map-demo")
+                                .bucket(&bucket)
                                 .key(format!("{:016X}", offset))
                                 .send()
                                 .await;
@@ -261,11 +264,11 @@ impl S3Map {
                     _ => todo!(),
                 },
                 _ = drop_rx.recv() => {
-                    S3Map::flush_dirty(&uffd, &mut client, &mut dirty, start, object_len).await?;
+                    S3Map::flush_dirty(&uffd, &mut client, &bucket, &mut dirty, start, object_len).await?;
                     return Ok(())
                 },
                 _ = flush_ticker.tick() => {
-                    S3Map::flush_dirty(&uffd, &mut client, &mut dirty, start, object_len).await?;
+                    S3Map::flush_dirty(&uffd, &mut client, &bucket, &mut dirty, start, object_len).await?;
                     continue
                 },
             }
@@ -275,6 +278,7 @@ impl S3Map {
     async fn flush_dirty(
         uffd: &AsyncUffd,
         client: &mut aws_sdk_s3::Client,
+        bucket: &str,
         dirty: &mut HashSet<usize>,
         start: usize,
         pages_per_object: usize,
@@ -287,7 +291,7 @@ impl S3Map {
             let slice = unsafe { slice::from_raw_parts(addr as *const u8, pages_per_object) };
             client
                 .put_object()
-                .bucket("s3map-demo")
+                .bucket(bucket)
                 .key(format!("{:016X}", offset))
                 .body(ByteStream::from(slice.to_vec()))
                 .send()
