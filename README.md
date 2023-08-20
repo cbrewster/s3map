@@ -1,4 +1,4 @@
 # s3map
 
-Map memory to S3 objects using userfaultfd.
+Map S3 objects to memory using [userfaultfd](https://man7.org/linux/man-pages/man2/userfaultfd.2.html)
 
