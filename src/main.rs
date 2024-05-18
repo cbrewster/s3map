@@ -173,11 +173,10 @@ impl S3Map {
 
         // The page fault handler _must_ run in a different thread than the one where memory is
         // being accessed. Otherwise things can deadlock because the page fault cannot be handled
-        // because the thread is blocked on the read.
+        // because the thread that is blocked on the read.
         let start = addr as usize;
         let join_handle = thread::spawn(move || {
-            // We use a tokio async runtime to make it easier to work with events and background
-            // persistence.
+            // We use a tokio async runtime to make it easier to work with epoll and async I/O.
             let rt = runtime::Runtime::new().unwrap();
             LocalSet::new().block_on(&rt, async move {
                 spawn_local(Self::handler(
@@ -201,17 +200,17 @@ impl S3Map {
         })
     }
 
-    /// Returns a mutable slice containing the entire memmapped region.
+    /// Returns a mutable slice containing the entire mmapped region.
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         unsafe { slice::from_raw_parts_mut(self.addr as *mut u8, self.len) }
     }
 
-    /// Returns a slice containing the entire memmapped region.
+    /// Returns a slice containing the entire mmapped region.
     pub fn as_slice(&self) -> &[u8] {
         unsafe { slice::from_raw_parts(self.addr as *mut u8, self.len) }
     }
 
-    /// Returns the length in bytes of the memmapped region.
+    /// Returns the length in bytes of the mmapped region.
     pub fn len(&self) -> usize {
         self.len
     }
@@ -331,9 +330,9 @@ impl Drop for S3Map {
         if let Some(join_handle) = self.join_handle.take() {
             join_handle
                 .join()
-                .expect("failed to join")
-                .expect("handler error")
-                .expect("idk lol");
+                .expect("failed to join thread")
+                .expect("failed to join async task")
+                .expect("failed to handle");
         }
         unsafe {
             munmap(self.addr, self.len).expect("munmap failed");
